@@ -119,19 +119,31 @@ defmodule Hammer.ETS.TokenBucket do
     # Try to insert new empty bucket if doesn't exist
     :ets.insert_new(table, {key, capacity, now})
 
-    [{^key, current_level, last_update}] = :ets.lookup(table, key)
-    new_tokens = trunc((now - last_update) * refill_rate)
+    # Handle the case where the entry was deleted between insert_new and lookup
+    # (e.g. by the cleanup process removing stale entries)
+    current_tokens =
+      case :ets.lookup(table, key) do
+        [{^key, current_level, last_update}] ->
+          new_tokens = trunc((now - last_update) * refill_rate)
+          min(capacity, current_level + new_tokens)
 
-    current_tokens = min(capacity, current_level + new_tokens)
+        [] ->
+          # Re-create the entry that was deleted (e.g. by cleanup) without
+          # overwriting if another process inserted concurrently
+          :ets.insert_new(table, {key, capacity, now})
+          capacity
+      end
 
-    if current_tokens >= cost do
-      final_level = current_tokens - cost
+    with {:allow, final_level} <- consume(current_tokens, cost) do
       :ets.insert(table, {key, final_level, now})
       {:allow, final_level}
-    else
-      {:deny, 1000}
     end
   end
+
+  defp consume(current_tokens, cost) when current_tokens >= cost,
+    do: {:allow, current_tokens - cost}
+
+  defp consume(_current_tokens, _cost), do: {:deny, 1000}
 
   @doc """
   Returns the current level of the bucket for a given key.
