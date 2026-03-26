@@ -114,7 +114,7 @@ defmodule Hammer.ETS.TokenBucket do
           cost :: pos_integer()
         ) :: {:allow, non_neg_integer()} | {:deny, non_neg_integer()}
   def hit(table, key, refill_rate, capacity, cost \\ 1) do
-    now = System.system_time(:second)
+    now = ETS.now()
 
     # Try to insert new empty bucket if doesn't exist
     :ets.insert_new(table, {key, capacity, now})
@@ -124,7 +124,7 @@ defmodule Hammer.ETS.TokenBucket do
     current_tokens =
       case :ets.lookup(table, key) do
         [{^key, current_level, last_update}] ->
-          new_tokens = trunc((now - last_update) * refill_rate)
+          new_tokens = div((now - last_update) * refill_rate, 1000)
           min(capacity, current_level + new_tokens)
 
         [] ->
