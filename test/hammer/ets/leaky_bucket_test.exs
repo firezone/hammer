@@ -66,6 +66,47 @@ defmodule Hammer.ETS.LeakyBucketTest do
     end
   end
 
+  describe "hit with concurrent cleanup" do
+    test "does not crash when a concurrent deleter races with hit/5", %{table: table} do
+      key = "concurrent_key"
+      leak_rate = 10
+      capacity = 10
+
+      # Spawn a process that continuously deletes the key to provoke the race
+      # between insert_new and lookup inside hit/5
+      deleter =
+        spawn_link(fn ->
+          Stream.repeatedly(fn ->
+            try do
+              :ets.delete(table, key)
+            rescue
+              ArgumentError -> :ok
+            end
+          end)
+          |> Stream.run()
+        end)
+
+      # Call hit/5 many times concurrently; none should raise MatchError
+      results =
+        Task.async_stream(
+          1..200,
+          fn _ -> LeakyBucket.hit(table, key, leak_rate, capacity, 1) end,
+          max_concurrency: 10,
+          timeout: 30_000
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      Process.unlink(deleter)
+      Process.exit(deleter, :kill)
+
+      # Every result must be a valid {:allow, _} or {:deny, _}
+      for result <- results do
+        assert {tag, _level} = result
+        assert tag in [:allow, :deny]
+      end
+    end
+  end
+
   describe "get" do
     test "get returns current bucket level", %{table: table} do
       key = "key"

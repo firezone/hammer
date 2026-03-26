@@ -116,23 +116,31 @@ defmodule Hammer.ETS.LeakyBucket do
     # Try to insert new empty bucket if doesn't exist
     :ets.insert_new(table, {key, 0, now})
 
-    # Get current bucket state
-    [{^key, current_fill, last_update}] = :ets.lookup(table, key)
+    # Handle the case where the entry was deleted between insert_new and lookup
+    # (e.g. by the cleanup process removing stale entries)
+    current_fill =
+      case :ets.lookup(table, key) do
+        [{^key, current_fill, last_update}] ->
+          leaked = trunc((now - last_update) * leak_rate)
+          max(0, current_fill - leaked)
 
-    leaked = trunc((now - last_update) * leak_rate)
+        [] ->
+          # Re-create the entry that was deleted (e.g. by cleanup) without
+          # overwriting if another process inserted concurrently
+          :ets.insert_new(table, {key, 0, now})
+          0
+      end
 
-    # Subtract leakage from current level (don't go below 0)
-    current_fill = max(0, current_fill - leaked)
-
-    if current_fill < capacity do
-      final_level = current_fill + cost
-
+    with {:allow, final_level} <- fill(current_fill, capacity, cost) do
       :ets.insert(table, {key, final_level, now})
       {:allow, final_level}
-    else
-      {:deny, 1000}
     end
   end
+
+  defp fill(current_fill, capacity, cost) when current_fill < capacity,
+    do: {:allow, current_fill + cost}
+
+  defp fill(_current_fill, _capacity, _cost), do: {:deny, 1000}
 
   @doc """
   Returns the current level of the bucket for a given key.
