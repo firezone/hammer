@@ -72,7 +72,7 @@ defmodule Hammer.ETS.CleanTest do
   end
 
   test "cleaning works for token bucket" do
-    start_supervised!({RateLimitTokenBucket, clean_period: 100})
+    start_supervised!({RateLimitTokenBucket, clean_period: 100, key_older_than: 100})
 
     key = "key"
     refill_rate = 1
@@ -82,14 +82,14 @@ defmodule Hammer.ETS.CleanTest do
 
     assert [_] = :ets.tab2list(RateLimitTokenBucket)
 
-    # Wait for cleanup to occur by polling the table
+    # Wait for entry to become stale and cleanup to remove it
     eventually(fn ->
       :ets.tab2list(RateLimitTokenBucket) == []
     end)
   end
 
   test "cleaning works for leaky bucket" do
-    start_supervised!({RateLimitLeakyBucket, clean_period: 100})
+    start_supervised!({RateLimitLeakyBucket, clean_period: 100, key_older_than: 100})
 
     key = "key"
     leak_rate = 1
@@ -99,9 +99,39 @@ defmodule Hammer.ETS.CleanTest do
 
     assert [_] = :ets.tab2list(RateLimitLeakyBucket)
 
-    # Wait for cleanup to occur by polling the table
+    # Wait for entry to become stale and cleanup to remove it
     eventually(fn ->
       :ets.tab2list(RateLimitLeakyBucket) == []
     end)
+  end
+
+  test "cleanup does not delete fresh token bucket entries" do
+    pid =
+      start_supervised!(
+        {RateLimitTokenBucket, clean_period: 100, key_older_than: :timer.hours(24)}
+      )
+
+    assert {:allow, 9} = RateLimitTokenBucket.hit("key", 1, 10, 1)
+
+    # Trigger cleanup directly and verify fresh entry survives
+    config = :sys.get_state(pid)
+    config.algorithm.clean(config)
+
+    assert [_] = :ets.tab2list(RateLimitTokenBucket)
+  end
+
+  test "cleanup does not delete fresh leaky bucket entries" do
+    pid =
+      start_supervised!(
+        {RateLimitLeakyBucket, clean_period: 100, key_older_than: :timer.hours(24)}
+      )
+
+    assert {:allow, 1} = RateLimitLeakyBucket.hit("key", 1, 10, 1)
+
+    # Trigger cleanup directly and verify fresh entry survives
+    config = :sys.get_state(pid)
+    config.algorithm.clean(config)
+
+    assert [_] = :ets.tab2list(RateLimitLeakyBucket)
   end
 end

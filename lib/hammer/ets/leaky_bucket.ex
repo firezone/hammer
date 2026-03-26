@@ -111,7 +111,7 @@ defmodule Hammer.ETS.LeakyBucket do
           cost :: pos_integer()
         ) :: {:allow, non_neg_integer()} | {:deny, non_neg_integer()}
   def hit(table, key, leak_rate, capacity, cost) do
-    now = System.system_time(:second)
+    now = ETS.now()
 
     # Try to insert new empty bucket if doesn't exist
     :ets.insert_new(table, {key, 0, now})
@@ -121,7 +121,7 @@ defmodule Hammer.ETS.LeakyBucket do
     current_fill =
       case :ets.lookup(table, key) do
         [{^key, current_fill, last_update}] ->
-          leaked = trunc((now - last_update) * leak_rate)
+          leaked = div((now - last_update) * leak_rate, 1000)
           max(0, current_fill - leaked)
 
         [] ->
